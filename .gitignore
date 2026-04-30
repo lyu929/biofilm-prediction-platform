@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+
+# Local databases and generated outputs
+*.db
+*.sqlite
+data/raw/*.csv
+data/raw/*.xlsx
+data/processed/*.csv
+models/*.joblib
+models/*.pt
+outputs/figures/*.png
+outputs/results/*.csv
+outputs/predictions/*.csv
+
+# Keep example placeholders in Git
+!data/examples/*.csv
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!models/.gitkeep
+!outputs/figures/.gitkeep
+!outputs/results/.gitkeep
+!outputs/predictions/.gitkeep

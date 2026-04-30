@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<title>CellDivision</title>
+<style type="text/css">
+body{
+		font-family: "HelveticaNeue-Light", "Helvetica Neue Light", "Helvetica Neue",
+		 Helvetica, Arial, "Lucida Grande", sans-serif;
+	 padding : 15px;
+	 max-width: 600px;
+	 margin: auto;
+}
+td {
+	 padding: 10px;
+	 vertical-align: top;
+}
+</style>
+
+
+<script src="./artistoo.js"></script>
+<script src="./fpsmeter.min.js"></script>
+<script>
+"use strict"
+
+
+/*	----------------------------------
+	CONFIGURATION SETTINGS
+	----------------------------------
+*/
+let config = {
+
+	// Grid settings
+	ndim : 2,
+	field_size : [400,200],
+	
+	// CPM parameters and configuration
+	conf : {
+		// Basic CPM parameters
+		torus : [false,false],				// Should the grid have linked borders?
+		seed : 2,							// Seed for random number generation.
+		T : 20,								// CPM temperature
+		
+		// Constraint parameters. 
+		// Mostly these have the format of an array in which each element specifies the
+		// parameter value for one of the cellkinds on the grid.
+		// First value is always cellkind 0 (the background) and is often not used.
+
+		
+		// Adhesion parameters:
+		J : [ 
+		 	[0,20],
+			[20,80]
+		],
+		
+		// VolumeConstraint parameters
+		LAMBDA_V : [0,50],				// VolumeConstraint importance per cellkind
+		V : [0,152]					// Target volume of each cellkind
+		
+	},
+	
+	// Simulation setup and configuration: this controls stuff like grid initialization,
+	// runtime, and what the output should look like.
+	simsettings : {
+	
+		// Cells on the grid
+		NRCELLS : [5],						// Number of cells to seed for all
+		// non-background cellkinds.
+		// Runtime etc
+		BURNIN : 100,
+		RUNTIME : 1000,
+		RUNTIME_BROWSER : "Inf",
+		
+		// Visualization
+		CANVASCOLOR : "EEEEEE",
+		CELLCOLOR : ["000000"],
+		SHOWBORDERS : [true],				// Should cellborders be displayed?
+		BORDERCOL : ["666666"],				// color of the cell borders
+		zoom : 2,							// zoom in on canvas with this factor.
+		
+		// Output images
+		SAVEIMG : true,						// Should a png image of the grid be saved
+		// during the simulation?
+		IMGFRAMERATE : 1,					// If so, do this every <IMGFRAMERATE> MCS.
+		SAVEPATH : "output/img/CellDivision",	// ... And save the image in this folder.
+		EXPNAME : "CellDivision",					// Used for the filename of output images.
+		
+		// Output stats etc
+		STATSOUT : { browser: false, node: true }, // Should stats be computed?
+		LOGRATE : 10							// Output stats every <LOGRATE> MCS.
+
+	}
+}
+/*	---------------------------------- */
+let sim, meter
+let birthTime = {} 
+let Vdiv = {}
+let AIgrid
+const QS = {
+	SECRETION : 0.10,  // How many signals are secreted by each cell pixel per MCS
+  	D         : 0.10,  // Diffusion coefficient (the larger the value, the faster the diffusion)
+  	DECAY     : 0.01,  // Each MCS degradation rate (0.01 = 99% remaining after each step)
+  	THRESHOLD : 0.50   // When the average intracellular signal reaches this threshold, it is considered as QS-on.
+}
+const ENV2 = {
+  	SECRETION : 5,
+  	D         : 0.0001,
+  	DECAY     : 0.05,
+  	THRESHOLD : 3
+}
+function initialize(){
+	 /* 	The following functions are defined below and will be added to
+	 	the simulation object. If Custom-methods above is set to false,
+	 	this object is ignored and not used in the html/node files. */
+	 let custommethods = {
+	 	postMCSListener : postMCSListener,
+	 	initializeGrid : initializeGrid,
+		drawCanvas : drawCanvas
+	 }
+	sim = new CPM.Simulation( config, custommethods )
+	
+	sim.g1 = new CPM.Grid2D(
+  		[sim.C.extents[0]/10, sim.C.extents[1]/10],
+  		config.conf.torus,
+  		"Float32"
+	)
+	sim.gi1 = new CPM.CoarseGrid(sim.g1, 10)
+	sim.g2 = new CPM.Grid2D(
+  		[sim.C.extents[0]/10, sim.C.extents[1]/10],
+  		config.conf.torus,
+  		"Float32"
+	)
+	sim.gi2 = new CPM.CoarseGrid(sim.g2, 10)
+
+	AIgrid = new CPM.Grid2D(
+  		config.field_size,
+  		config.conf.torus,
+  		"Float32"
+	)
+	sim.C.add( new CPM.ChemotaxisConstraint({
+  		LAMBDA_CH : [0,20],
+  		CH_FIELD  : sim.gi1
+	}))
+	sim.C.add( new CPM.ChemotaxisConstraint({
+  		LAMBDA_CH : [0,10],
+  		CH_FIELD  : sim.gi2
+	}))
+	
+	const zoom = config.simsettings.zoom || 2
+  	sim.Cim = new CPM.Canvas(sim.C, { zoom })
+  	const canvasEl = sim.Cim.el || sim.Cim.canvas || sim.Cim._canvas
+  	if (!canvasEl) {
+    		console.log("Canvas object keys:", Object.keys(sim.Cim))
+    		throw new Error("Cannot find canvas element on sim.Cim (no el/canvas/_canvas).")
+  	}
+  	document.body.appendChild(canvasEl)
+
+	meter = new FPSMeter({left:"auto", right:"5px"})
+	requestAnimationFrame(step)
+}
+
+
+function step(){
+	sim.step()
+	updateHUD(sim)
+  	meter.tick()
+  	requestAnimationFrame(step)
+}
+
+function updateAI(sim){
+  	// 1) Secretion: Each pixel occupied by the cell adds a little signal outward.
+  	const pbc = sim.C.getStat(CPM.PixelsByCell)
+  	for (const cidStr of Object.keys(pbc)) {
+    		const cid = parseInt(cidStr)
+    		for (const px of pbc[cid]) {
+      			const p = Array.isArray(px) ? px : sim.C.grid.i2p(px)
+      			AIgrid.setpix(p, AIgrid.pixt(p) + QS.SECRETION)
+    		}
+  	}
+
+  	// 2) Diffusion
+  	AIgrid.diffusion(QS.D)
+
+  	// 3) Degradation (overall attenuation)
+  	AIgrid.multiplyBy(1 - QS.DECAY)
+}
+
+function meanAIofCell(sim, cid){
+  	const pbc = sim.C.getStat(CPM.PixelsByCell)
+  	const pixels = pbc[cid]
+  	if (!pixels || pixels.length === 0) return 0
+
+  	let sum = 0
+  	for (const px of pixels){
+    		const p = Array.isArray(px) ? px : sim.C.grid.i2p(px)
+    		sum += AIgrid.pixt(p)
+  	}
+  	return sum / pixels.length
+}
+
+/* The following custom methods will be added to the simulation object*/
+function postMCSListener(){
+
+	if( !this.helpClasses["gm"] ){ this.addGridManipulator() }
+	updateAI(this)
+	let cellpixels = this.C.getStat(CPM.BorderPixelsByCell)
+	for( let cell of Object.keys(cellpixels) ){
+    		for( let pix of cellpixels[cell] ){
+      			this.gi1.addValue(pix, 30)
+    		}
+  	}
+
+  	let diffusionsteps = 10
+  	let D1 = 0.0001 * Math.pow(this.gi1.upscale, 2)
+	let D2 = ENV2.D * Math.pow(this.gi2.upscale, 2)
+  	for( let i = 1; i <= diffusionsteps; i++ ){
+    		this.g1.diffusion(D1 / diffusionsteps)
+		this.g2.diffusion(D2 / diffusionsteps)
+  	}
+
+  	this.g1.multiplyBy(0.95)
+	this.g2.multiplyBy(1 - ENV2.DECAY)
+	for( let cell of Object.keys(cellpixels) ){
+    		for( let pix of cellpixels[cell] ){
+        		this.gi2.addValue(pix, ENV2.SECRETION)
+    		}
+	}
+	
+
+	const MIN_PER_MCS = 0.2    
+	const DIV_CLOCK = 8     // 8 minutes
+	/* const BASE_PDIV   = 0.005     // Base splitting probability (probability per MCS after maturation)*/
+
+	for( let cid of this.C.cellIDs() ){
+
+		if (birthTime[cid] === undefined ){
+  			birthTime[cid] = this.time
+			const mean = this.C.conf.V[1] * 0.75
+			const sd   = this.C.conf.V[1] * 0.04
+			Vdiv[cid] = Math.max(sampleNormal(mean, sd))
+  		}
+
+  		const ageMin = (this.time - birthTime[cid]) * MIN_PER_MCS
+		const signal = meanSignalOfCell(this, cid)
+		const ai = meanAIofCell(this, cid)
+
+		let pDiv = 0.10
+		if( ai >= QS.THRESHOLD ){
+    			pDiv = 0.06
+		}
+		if (ageMin >= DIV_CLOCK && this.C.getVolume(cid) >= Vdiv[cid] && signal >= 1 && this.C.random() < pDiv){
+
+    			const before = new Set(this.C.cellIDs())
+
+    			this.gm.divideCell(cid)
+
+    			birthTime[cid] = this.time
+			const mean = this.C.conf.V[1] * 0.75
+			const sd   = this.C.conf.V[1] * 0.04
+			Vdiv[cid] = Math.max(sampleNormal(mean, sd))
+
+    			const after = new Set(this.C.cellIDs())
+    			for (let nid of after){
+        			if (!before.has(nid)){
+            				birthTime[nid] = this.time
+					
+    				Vdiv[nid] = Math.max(sampleNormal(mean, sd))
+        			}
+    			}
+		}
+	}
+}
+function meanSignalOfCell(sim, cid){
+  	const pbc = sim.C.getStat(CPM.PixelsByCell)
+  	const pixels = pbc[cid]
+  	if (!pixels || pixels.length === 0) return 0
+
+  	let sum = 0
+  	for (const px of pixels){
+    		const p = Array.isArray(px) ? px : sim.C.grid.i2p(px)
+    		sum += sim.gi1.pixt(p)
+  	}
+  	return sum / pixels.length
+}
+
+function sampleNormal(mean, sd){
+  	const u1 = Math.random()
+  	const u2 = Math.random()
+  	const z  = Math.sqrt(-2*Math.log(u1)) * Math.cos(2*Math.PI*u2)
+  	return mean + sd*z
+}
+
+function initializeGrid(){
+	
+	// add the initializer if not already there
+	if( !this.helpClasses["gm"] ){ this.addGridManipulator() }
+	
+	let nrcells = this.conf["NRCELLS"], cellkind, i
+		
+	// Seed the right number of cells for each cellkind
+	for( cellkind = 0; cellkind < nrcells.length; cellkind ++ ){
+		for( i = 0; i < nrcells[cellkind]; i++ ){
+			this.gm.seedCell(cellkind+1)
+		}
+	}
+	for( let cid of this.C.cellIDs() ){
+  		birthTime[cid] = this.time
+		const mean = this.C.conf.V[1] * 0.75
+  		const sd   = this.C.conf.V[1] * 0.04  
+  		Vdiv[cid] = Math.max(sampleNormal(mean, sd))
+	}
+
+}
+
+function drawCanvas(){
+
+  	const MIN_PER_MCS = 0.2
+  	const DIV_CLOCK = 8
+
+  	const zoom = this.conf.zoom || 2
+
+  	const canvasEl = this.Cim.el || this.Cim.canvas || this.Cim._canvas
+  	const ctx = canvasEl.getContext("2d")
+
+  	ctx.fillStyle = "#EEEEEE"
+  	ctx.fillRect(0, 0, canvasEl.width, canvasEl.height)
+	this.Cim.drawFieldContour(this.gi1, 5, "00AA00")
+	this.Cim.drawFieldContour(this.gi2, 5, "5555FF")
+  	const pbc = this.C.getStat(CPM.PixelsByCell)
+
+  	for (const cidStr of Object.keys(pbc)) {
+    		const cid = parseInt(cidStr)
+
+    		if (birthTime[cid] === undefined) birthTime[cid] = this.time
+    		const ageMin = (this.time - birthTime[cid]) * MIN_PER_MCS
+		const ai = meanAIofCell(this, cid)
+    		const mature = (ageMin >= DIV_CLOCK)
+    		const qson   = (ai >= QS.THRESHOLD)
+    		
+		if (!mature) ctx.fillStyle = "#3782FA"
+    		else if (!qson) ctx.fillStyle = "#FF0000"
+    		else ctx.fillStyle = "#00AA00"
+
+    		for (const px of pbc[cid]) {
+      
+      			let x, y
+      			if (Array.isArray(px)) {
+        			x = px[0]; y = px[1]
+      			} else {
+        			const p = this.C.grid.i2p(px)   // index -> [x,y]
+        			x = p[0]; y = p[1]
+      			}
+      			ctx.fillRect(x * zoom, y * zoom, zoom, zoom)
+    		}
+  	}
+
+  
+  	this.Cim.drawCellBorders(1, "666666")
+}
+
+function updateHUD(sim){
+  	const MIN_PER_MCS = 0.2   
+  	const DIV_CLOCK = 8
+
+  	const nowMin = sim.time * MIN_PER_MCS
+
+  	let ages = []
+	let aiVals = []
+  	for (let cid of sim.C.cellIDs()){
+    		if (birthTime[cid] !== undefined){
+      			ages.push((sim.time - birthTime[cid]) * MIN_PER_MCS)
+			aiVals.push(meanAIofCell(sim, cid))
+    		}
+  	}
+  	ages.sort((a,b)=>a-b)
+  	const minAge = ages.length ? ages[0].toFixed(1) : "NA"
+  	const maxAge = ages.length ? ages[ages.length-1].toFixed(1) : "NA"
+
+  	const meanAI = aiVals.length
+    		? (aiVals.reduce((s,v)=>s+v,0)/aiVals.length).toFixed(3)
+    		: "NA"
+
+  	sim.Cim && (document.getElementById("hud").textContent = `t=${sim.time} MCS (~${nowMin.toFixed(1)} min) | age: ${minAge}–${maxAge} min | DIV_CLOCK=${DIV_CLOCK} min | mean AI=${meanAI} | QS_TH=${QS.THRESHOLD}`)
+}
+
+</script>
+</head>
+<body onload="initialize()">
+ 
+ <h1>Cell Division</h1>
+ <p>A CPM is coupled to stochastic cell division in between Monte Carlo Steps. </p>
+ <p id="hud"></p>
+</body>
+</html>

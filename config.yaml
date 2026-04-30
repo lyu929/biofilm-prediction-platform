@@ -1,0 +1,70 @@
+project:
+  name: biofilm-prediction-platform
+  random_seed: 1
+
+paths:
+  raw_data: data/raw
+  processed_data: data/processed
+  models: models
+  figures: outputs/figures
+  results: outputs/results
+  predictions: outputs/predictions
+
+database:
+  type: mysql
+  host: localhost
+  port: 3306
+  user: root
+  password: your_password
+  database: biofilm_db
+
+# PostgreSQL example:
+# database:
+#   type: postgresql
+#   host: localhost
+#   port: 5432
+#   user: postgres
+#   password: your_password
+#   database: biofilm_db
+
+simulation:
+  flow_rate: 0.5
+  adhesion_wall: 0.6
+  adhesion_cell: 0.5
+  diffusion_rate: 0.05
+  signal_decay: 0.01
+  qs_threshold: 0.6
+  division_rate: 0.01
+  eps_rate: 0.02
+  runtime: 300
+  random_seed: 1
+  export_interval: 10
+  initial_cell_count: 25
+  attachment_distance: 6.0
+  shear_scale: 0.5
+
+parameter_sweep:
+  flow_rate: [0.1, 0.5, 1.0]
+  adhesion_wall: [0.2, 0.5, 0.8]
+  adhesion_cell: [0.3, 0.6]
+  diffusion_rate: [0.01, 0.05]
+  signal_decay: [0.005, 0.01]
+  qs_threshold: [0.3, 0.6]
+  division_rate: [0.005, 0.01]
+  eps_rate: [0.01, 0.03]
+  random_seed: [1, 2, 3]
+  runtime: 300
+  export_interval: 10
+
+modeling:
+  default_target: biofilm_thickness
+  early_timepoints: 10
+  test_size: 0.2
+  validation_size: 0.2
+  targets:
+    - biofilm_thickness
+    - surface_coverage
+    - roughness
+    - eps_fraction
+    - cluster_count
+    - time_to_stable_biofilm

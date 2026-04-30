@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Biofilm Simulation</title>
+    <style>
+        body {
+            font-family: "HelveticaNeue-Light", Helvetica, Arial, sans-serif;
+            padding: 15px;
+            max-width: 820px;
+            margin: auto;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+        }
+        #sim-container {
+            position: relative;
+            display: inline-block;
+            line-height: 0;  /* prevents gap under canvas */
+        }
+        /* Artistoo appends its canvas as first child — no id, so we target by tag */
+        #sim-container canvas:first-child {
+            display: block;
+        }
+        #flow-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;  /* clicks pass through to Artistoo canvas */
+        }
+        #legend {
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: #555;
+        }
+        #legend .gradient {
+            width: 120px;
+            height: 12px;
+            background: linear-gradient(90deg,
+                rgba(0,0,255,0.15),
+                rgba(0,255,0,0.15),
+                rgba(255,0,0,0.3));
+            border: 1px solid #ccc;
+        }
+    </style>
+    <script src="build/artistoo.js"></script>
+    <script src="build/fpsmeter.min.js"></script>
+</head>
+<body>
+    <h1>Biofilm Simulation</h1>
+    <p>
+        <strong>Black wall (type 1)</strong> at bottom.&nbsp;
+        <strong>grey cells (type 2)</strong> produce signal and flow right.&nbsp;
+        <strong>green cells (type 3)</strong> are activated by high signal. produce EPS (red)
+    </p>
+
+    <div id="status">Initializing...</div>
+
+    <!-- Artistoo will appendChild its canvas here -->
+    <div id="sim-container">
+        <!-- flow overlay — sized by main.js once sim dimensions are known -->
+        <canvas id="flow-overlay"></canvas>
+    </div>
+
+    <div id="legend">
+        <span>Flow speed:</span>
+        <div class="gradient"></div>
+        <span>slow → fast</span>
+    </div>
+
+    <script src="artistoo-worker.js"></script>
+    <script src="main.js"></script>
+
+    <script>
+        window.onload = function() {
+            console.log('Window loaded, calling initialize...');
+            initialize();
+        };
+    </script>
+</body>
+</html>
