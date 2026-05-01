@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -18,8 +19,8 @@ except ImportError:
 def _database_url(db_cfg: dict[str, Any], include_database: bool = True) -> str:
     db_type = (db_cfg.get("type") or "mysql").lower()
     host = db_cfg.get("host", "localhost")
-    user = quote_plus(str(db_cfg.get("user", "")))
-    password = quote_plus(str(db_cfg.get("password", "")))
+    user = quote_plus(str(db_cfg.get("user") or ""))
+    password = quote_plus(str(db_cfg.get("password") or ""))
     database = db_cfg.get("database", "")
 
     if db_type in {"mysql", "mariadb"}:
@@ -41,7 +42,19 @@ def create_db_engine(
     include_database: bool = True,
 ) -> Engine:
     cfg = load_config(config_path) if db_config is None else {"database": db_config}
-    url = _database_url(cfg.get("database", {}), include_database=include_database)
+    db = dict(cfg.get("database", {}))
+    env_map = {
+        "type": "BIOFILM_DB_TYPE",
+        "host": "BIOFILM_DB_HOST",
+        "port": "BIOFILM_DB_PORT",
+        "user": "BIOFILM_DB_USER",
+        "password": "BIOFILM_DB_PASSWORD",
+        "database": "BIOFILM_DB_NAME",
+    }
+    for key, env_name in env_map.items():
+        if os.getenv(env_name):
+            db[key] = os.getenv(env_name)
+    url = _database_url(db, include_database=include_database)
     return create_engine(url, pool_pre_ping=True, future=True)
 
 

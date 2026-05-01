@@ -37,10 +37,16 @@ JSON response structure identical to full server — JS needs zero changes.
 
 import asyncio
 import json
+from pathlib import Path
 import traceback
 
 import numpy as np
 import websockets
+
+try:
+    from database_stream import DatabaseStreamWriter
+except Exception:
+    DatabaseStreamWriter = None
 
 # ── Physical constants ────────────────────────────────────────────────────────
 H_FULL   = 5000.0    # µm  — full channel height
@@ -196,6 +202,8 @@ def build_response(mcs: int,
 class SimpleNSServer:
     def __init__(self):
         self._active = None
+        self._db_writer = None
+        self._config_path = Path(__file__).resolve().parents[1] / "config.yaml"
         print("\n" + "=" * 60)
         print("Simple analytic NS server")
         print(f"  Channel height : {H_FULL} µm")
@@ -206,6 +214,44 @@ class SimpleNSServer:
         print(f"  Profile at window mid  : {_u_raw(Y_WIN/2)/U_REF:.3f}")
         print(f"  Profile at wall        : {_u_raw(0.0)/U_REF:.3f}  (= 0.0)")
         print("=" * 60)
+
+    def _get_db_writer(self):
+        if DatabaseStreamWriter is None:
+            raise RuntimeError("DatabaseStreamWriter could not be imported. Check SQLAlchemy/pymysql installation.")
+        if self._db_writer is None:
+            self._db_writer = DatabaseStreamWriter(config_path=self._config_path)
+        return self._db_writer
+
+    async def _send_db_status(self, websocket, ok: bool, message: str, counts: dict | None = None):
+        try:
+            await websocket.send(json.dumps({
+                "type": "database_export_status",
+                "ok": ok,
+                "message": message,
+                "counts": counts or {},
+            }))
+        except Exception:
+            pass
+
+    async def _handle_database_export(self, websocket, data: dict) -> None:
+        msg_type = data.get("type")
+        writer = self._get_db_writer()
+
+        if msg_type == "simulation_start":
+            simulation = data.get("simulation") or {}
+            writer.write_simulation_start(simulation)
+            sid = simulation.get("simulation_id", "unknown")
+            print(f"DB simulation_start written: {sid}")
+            await self._send_db_status(websocket, True, f"simulation_start written: {sid}")
+            return
+
+        if msg_type == "simulation_snapshot":
+            counts = writer.write_snapshot(data)
+            mcs = data.get("timepoint", 0)
+            if int(mcs) % 50 == 0:
+                print(f"DB snapshot written at MCS {mcs}: {counts}")
+            await self._send_db_status(websocket, True, f"snapshot written at MCS {mcs}", counts)
+            return
 
     async def handler(self, websocket):
         if self._active is not None:
@@ -222,6 +268,15 @@ class SimpleNSServer:
                     break
                 try:
                     data   = json.loads(message)
+                    if data.get('type') in {'simulation_start', 'simulation_snapshot'}:
+                        try:
+                            await self._handle_database_export(websocket, data)
+                        except Exception as e:
+                            print(f"  Database export error: {e}")
+                            traceback.print_exc()
+                            await self._send_db_status(websocket, False, str(e))
+                        continue
+
                     if data.get('type') != 'boundary_conditions':
                         continue
                     mcs      = data.get('mcs', 0)

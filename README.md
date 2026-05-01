@@ -167,6 +167,36 @@ PostgreSQL.
 4. Run a simulation with database export.
 5. Refresh the DBeaver schema and inspect the five standard tables.
 
+## Run The Existing Browser Simulation Into DBeaver
+
+The original browser simulation in `src/main.js` can write directly into the
+database while it runs. This path does not use CSV files.
+
+Terminal 1, from the project root:
+
+```bash
+.venv/bin/python src/ns_simple.py
+```
+
+Terminal 2:
+
+```bash
+cd src
+../.venv/bin/python -m http.server 8000
+```
+
+Open:
+
+```text
+http://localhost:8000
+```
+
+Every browser reload creates a new `simulation_id`. Every 10 MCS by default,
+`src/main.js` sends a snapshot to `src/ns_simple.py`, and the server writes
+`cells`, `clusters`, `flow_field`, and `simulation_summary` into the DBeaver
+database. Detailed instructions are in
+`src/README_database_simulation_workflow.md`.
+
 ## Run One Simulation
 
 ```bash

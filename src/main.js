@@ -52,6 +52,35 @@ let flowForceConstraint = null;
 let overlayCanvas       = null;
 let overlayCtx          = null;
 
+// Database export is sent through the same local WebSocket as the NS solver.
+// The Python server (src/ns_simple.py) writes these snapshots to MySQL/PostgreSQL
+// using SQLAlchemy, so the browser never connects directly to the database.
+const DB_EXPORT_CONFIG = {
+    enabled: true,
+    exportInterval: 10,
+    attachmentDistance: 8,
+    stableCoverageThreshold: 0.6,
+    params: {
+        flow_rate: 0.5,
+        adhesion_wall: 0.6,
+        adhesion_cell: 0.5,
+        diffusion_rate: 0.25,
+        signal_decay: 0.008,
+        qs_threshold: 50,
+        division_rate: 0.01,
+        eps_rate: 0.02,
+        runtime: 1000,
+        random_seed: 1,
+    }
+};
+
+let dbSimulationId = null;
+let dbRunStarted = false;
+let dbFlowFieldSent = false;
+let dbLastExportTime = -1;
+let dbTimeToFirstCluster = null;
+let dbTimeToStableBiofilm = null;
+
 // ============ CONFIGURATION ============
 const config = {
     ndim: 2,
@@ -296,11 +325,17 @@ function connectNS() {
             console.log('NS server connected');
             document.getElementById('status').innerHTML =
                 'NS server connected — simulation running';
+            ensureDatabaseRunStarted();
         };
 
         nsSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                if (data.type === 'database_export_status') {
+                    if (data.ok) console.log('Database export:', data.message, data.counts || {});
+                    else console.error('Database export failed:', data.message);
+                    return;
+                }
                 if (data.type === 'flow_forces') {
                     if (data.full_field_velocities) {
                         nsFlowField = data.full_field_velocities;
@@ -427,6 +462,242 @@ function sampleFlowVelocity(cpmX, cpmY) {
     const row    = Math.min(NS_GRID_NY-1, Math.max(0, rowRaw));
 
     return nsFlowField[row*NS_GRID_NX + col] || [0.0, 0.0];
+}
+
+// ============ DATABASE EXPORT ============
+function makeSimulationId() {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const suffix = Math.random().toString(36).slice(2, 8);
+    return `browser_${stamp}_${suffix}`;
+}
+
+function sendDatabaseMessage(payload) {
+    if (!DB_EXPORT_CONFIG.enabled) return;
+    if (!nsConnected || !nsSocket || nsSocket.readyState !== WebSocket.OPEN) return;
+    try {
+        nsSocket.send(JSON.stringify(payload));
+    } catch(e) {
+        console.warn("Database export send failed:", e);
+    }
+}
+
+function ensureDatabaseRunStarted() {
+    if (!DB_EXPORT_CONFIG.enabled || dbRunStarted) return;
+    if (!nsConnected || !nsSocket || nsSocket.readyState !== WebSocket.OPEN) return;
+
+    if (!dbSimulationId) dbSimulationId = makeSimulationId();
+    const params = Object.assign({}, DB_EXPORT_CONFIG.params, {
+        diffusion_rate: SIGNAL_CONFIG.diffusionRate,
+        signal_decay: SIGNAL_CONFIG.decayRate,
+        qs_threshold: SIGNAL_CONFIG.activationThreshold,
+        division_rate: DIVISION_CONFIG.divideProbK3,
+        eps_rate: DIVISION_CONFIG.epsProbK3,
+        runtime: Number.isFinite(config.simsettings.RUNTIME_BROWSER)
+            ? config.simsettings.RUNTIME_BROWSER
+            : config.simsettings.RUNTIME,
+        random_seed: config.conf.seed,
+    });
+    params.simulation_id = dbSimulationId;
+    params.created_at = new Date().toISOString().slice(0, 19).replace("T", " ");
+
+    sendDatabaseMessage({
+        type: "simulation_start",
+        simulation_id: dbSimulationId,
+        simulation: params
+    });
+    dbRunStarted = true;
+}
+
+function stateFromKind(kind, y, H) {
+    if (kind === 4) return "eps_producing";
+    if (kind === 3) return "qs_active";
+    if (kind === 2 && y >= H - DB_EXPORT_CONFIG.attachmentDistance) return "attached";
+    if (kind === 2) return "planktonic";
+    return "inactive";
+}
+
+function estimateFlowFieldRecords() {
+    if (!nsFlowField || dbFlowFieldSent || !dbSimulationId) return [];
+    const W = sim.C.extents[0];
+    const H = sim.C.extents[1];
+    const dx = W / NS_GRID_NX;
+    const dy = H / NS_GRID_NY;
+    const records = [];
+
+    for (let row = 0; row < NS_GRID_NY; row++) {
+        for (let col = 0; col < NS_GRID_NX; col++) {
+            const idx = row * NS_GRID_NX + col;
+            const [vx, vy] = nsFlowField[idx] || [0, 0];
+            const nextRow = Math.min(NS_GRID_NY - 1, row + 1);
+            const [vxNext] = nsFlowField[nextRow * NS_GRID_NX + col] || [vx, 0];
+            records.push({
+                simulation_id: dbSimulationId,
+                x: (col + 0.5) * dx,
+                y: (row + 0.5) * dy,
+                velocity_x: vx,
+                velocity_y: vy,
+                shear: Math.abs(vxNext - vx) / Math.max(dy, 1e-9),
+            });
+        }
+    }
+    dbFlowFieldSent = true;
+    return records;
+}
+
+function buildDatabaseSnapshot(currentTime) {
+    if (!dbSimulationId) dbSimulationId = makeSimulationId();
+
+    const W = sim.C.extents[0];
+    const H = sim.C.extents[1];
+    const centroids = sim.C.getStat(CPM.Centroids);
+    const pixelsByCell = sim.C.getStat(CPM.PixelsByCell);
+    const { clusterSizes, clusterRoot } = computeClusters();
+
+    const cells = [];
+    const clusterAgg = new Map();
+    let totalCellCount = 0;
+    let qsCount = 0;
+    let epsCount = 0;
+    let totalBiomassPixels = 0;
+    let minY = H;
+    const nearWallXs = new Set();
+    const topByX = new Map();
+
+    for (const cellId in centroids) {
+        const id = Number(cellId);
+        const kind = sim.C.cellKind(id);
+        if (kind < 2 || kind > 4) continue;
+
+        const centroid = centroids[cellId];
+        const pixels = pixelsByCell[cellId] || [];
+        const volume = pixels.length;
+        const root = clusterRoot(id) || id;
+        const clusterId = String(root);
+        const state = stateFromKind(kind, centroid[1], H);
+
+        totalCellCount++;
+        totalBiomassPixels += volume;
+        if (kind === 3) qsCount++;
+        if (kind === 4) epsCount++;
+
+        for (const [x, y] of pixels) {
+            if (y < minY) minY = y;
+            if (y >= H - DB_EXPORT_CONFIG.attachmentDistance) nearWallXs.add(Math.round(x));
+            const key = Math.round(x);
+            topByX.set(key, Math.min(topByX.get(key) ?? H, y));
+        }
+
+        cells.push({
+            cell_id: String(id),
+            simulation_id: dbSimulationId,
+            timepoint: currentTime,
+            x: centroid[0],
+            y: centroid[1],
+            state: state,
+            volume: volume,
+            local_signal: cellAI[id] || 0,
+            cluster_id: clusterId,
+        });
+
+        if (!clusterAgg.has(clusterId)) {
+            clusterAgg.set(clusterId, {
+                cluster_id: clusterId,
+                simulation_id: dbSimulationId,
+                timepoint: currentTime,
+                cluster_size: 0,
+                pixel_count: 0,
+                sum_x: 0,
+                sum_y: 0,
+                min_x: W,
+                max_x: 0,
+                min_y: H,
+                max_y: 0,
+            });
+        }
+        const agg = clusterAgg.get(clusterId);
+        agg.cluster_size += 1;
+        agg.pixel_count += volume;
+        agg.sum_x += centroid[0];
+        agg.sum_y += centroid[1];
+        for (const [x, y] of pixels) {
+            agg.min_x = Math.min(agg.min_x, x);
+            agg.max_x = Math.max(agg.max_x, x);
+            agg.min_y = Math.min(agg.min_y, y);
+            agg.max_y = Math.max(agg.max_y, y);
+        }
+    }
+
+    const clusters = [];
+    for (const agg of clusterAgg.values()) {
+        const pixelClusterSize = clusterSizes.get(Number(agg.cluster_id)) || agg.pixel_count;
+        if (agg.cluster_size < 2 && pixelClusterSize < CLUSTER_THRESHOLD) continue;
+        const bboxArea = Math.max(1, (agg.max_x - agg.min_x + 1) * (agg.max_y - agg.min_y + 1));
+        clusters.push({
+            cluster_id: agg.cluster_id,
+            simulation_id: dbSimulationId,
+            timepoint: currentTime,
+            cluster_size: agg.cluster_size,
+            center_x: agg.sum_x / Math.max(agg.cluster_size, 1),
+            center_y: agg.sum_y / Math.max(agg.cluster_size, 1),
+            density: agg.pixel_count / bboxArea,
+        });
+    }
+
+    if (clusters.length > 0 && dbTimeToFirstCluster === null) dbTimeToFirstCluster = currentTime;
+
+    const surfaceCoverage = nearWallXs.size / W;
+    if (dbTimeToStableBiofilm === null && surfaceCoverage >= DB_EXPORT_CONFIG.stableCoverageThreshold) {
+        dbTimeToStableBiofilm = currentTime;
+    }
+
+    const topHeights = Array.from(topByX.values()).map(y => H - y);
+    const meanHeight = topHeights.length
+        ? topHeights.reduce((a, b) => a + b, 0) / topHeights.length
+        : 0;
+    const roughness = topHeights.length
+        ? Math.sqrt(topHeights.reduce((s, h) => s + Math.pow(h - meanHeight, 2), 0) / topHeights.length)
+        : 0;
+    const clusterSizesForSummary = clusters.map(c => c.cluster_size);
+
+    const summary = {
+        simulation_id: dbSimulationId,
+        final_cell_count: totalCellCount,
+        biofilm_area: totalBiomassPixels,
+        biofilm_thickness: totalCellCount ? H - minY : 0,
+        surface_coverage: surfaceCoverage,
+        mean_cluster_size: clusterSizesForSummary.length
+            ? clusterSizesForSummary.reduce((a, b) => a + b, 0) / clusterSizesForSummary.length
+            : 0,
+        max_cluster_size: clusterSizesForSummary.length ? Math.max(...clusterSizesForSummary) : 0,
+        cluster_count: clusters.length,
+        roughness: roughness,
+        qs_active_ratio: totalCellCount ? qsCount / totalCellCount : 0,
+        eps_fraction: totalCellCount ? epsCount / totalCellCount : 0,
+        time_to_first_cluster: dbTimeToFirstCluster ?? 0,
+        time_to_stable_biofilm: dbTimeToStableBiofilm ?? 0,
+    };
+
+    return {
+        type: "simulation_snapshot",
+        simulation_id: dbSimulationId,
+        timepoint: currentTime,
+        cells,
+        clusters,
+        flow_field: estimateFlowFieldRecords(),
+        simulation_summary: summary,
+    };
+}
+
+function maybeExportDatabaseSnapshot(currentTime) {
+    if (!DB_EXPORT_CONFIG.enabled) return;
+    if (currentTime === dbLastExportTime) return;
+    if (currentTime % DB_EXPORT_CONFIG.exportInterval !== 0) return;
+    ensureDatabaseRunStarted();
+    if (!dbRunStarted) return;
+
+    const snapshot = buildDatabaseSnapshot(currentTime);
+    sendDatabaseMessage(snapshot);
+    dbLastExportTime = currentTime;
 }
 
 // ============ DIFFUSION WORKER ============
@@ -599,6 +870,9 @@ function initialize() {
                     if (vel) flowForceConstraint.updateCellDir(id, vel[0], vel[1]);
                 }
             }
+
+            // Export standardized cells/clusters/summary records to DBeaver DB.
+            maybeExportDatabaseSnapshot(currentTime);
         },
 
         divideAndSecrete: function() {
