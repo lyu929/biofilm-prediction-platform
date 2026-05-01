@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import random
 import sys
 from pathlib import Path
 
@@ -23,9 +25,60 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="data/raw")
     parser.add_argument("--export", choices=["csv", "database", "both", "none"], default="csv")
     parser.add_argument("--max_runs", type=int, default=None, help="Limit runs for quick smoke tests.")
+    parser.add_argument("--shuffle", action="store_true", help="Shuffle expanded grid before applying --max_runs.")
+    parser.add_argument("--shuffle_seed", type=int, default=1)
+    parser.add_argument(
+        "--skip_existing_csv",
+        action="store_true",
+        help="Skip parameter/runtime/seed combinations already present in output simulations.csv.",
+    )
     parser.add_argument("--runtime", type=int, default=None)
     parser.add_argument("--export_interval", type=int, default=None)
     return parser.parse_args()
+
+
+def _config_key(cfg: BiofilmSimulationConfig) -> tuple:
+    return (
+        round(float(cfg.flow_rate), 12),
+        round(float(cfg.adhesion_wall), 12),
+        round(float(cfg.adhesion_cell), 12),
+        round(float(cfg.diffusion_rate), 12),
+        round(float(cfg.signal_decay), 12),
+        round(float(cfg.qs_threshold), 12),
+        round(float(cfg.division_rate), 12),
+        round(float(cfg.eps_rate), 12),
+        int(cfg.runtime),
+        int(cfg.random_seed),
+    )
+
+
+def _existing_csv_keys(output_dir: str | Path) -> set[tuple]:
+    simulations_csv = Path(output_dir) / "simulations.csv"
+    if not simulations_csv.exists():
+        return set()
+
+    keys = set()
+    with simulations_csv.open("r", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            try:
+                keys.add(
+                    (
+                        round(float(row["flow_rate"]), 12),
+                        round(float(row["adhesion_wall"]), 12),
+                        round(float(row["adhesion_cell"]), 12),
+                        round(float(row["diffusion_rate"]), 12),
+                        round(float(row["signal_decay"]), 12),
+                        round(float(row["qs_threshold"]), 12),
+                        round(float(row["division_rate"]), 12),
+                        round(float(row["eps_rate"]), 12),
+                        int(float(row["runtime"])),
+                        int(float(row["random_seed"])),
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+    return keys
 
 
 def run_parameter_sweep(
@@ -33,6 +86,9 @@ def run_parameter_sweep(
     output_dir: str | Path = "data/raw",
     export: str = "csv",
     max_runs: int | None = None,
+    shuffle: bool = False,
+    shuffle_seed: int = 1,
+    skip_existing_csv: bool = False,
     runtime: int | None = None,
     export_interval: int | None = None,
 ):
@@ -43,6 +99,14 @@ def run_parameter_sweep(
     if export_interval is not None:
         base.export_interval = export_interval
     configs = expand_parameter_grid(grid, base_config=base)
+    if skip_existing_csv:
+        existing = _existing_csv_keys(output_dir)
+        before_count = len(configs)
+        configs = [cfg for cfg in configs if _config_key(cfg) not in existing]
+        print(f"Skipping {before_count - len(configs)} existing CSV parameter/runtime/seed combinations.")
+    if shuffle:
+        rng = random.Random(shuffle_seed)
+        rng.shuffle(configs)
     if max_runs is not None:
         configs = configs[:max_runs]
 
@@ -66,6 +130,9 @@ def main() -> None:
         output_dir=args.output,
         export=args.export,
         max_runs=args.max_runs,
+        shuffle=args.shuffle,
+        shuffle_seed=args.shuffle_seed,
+        skip_existing_csv=args.skip_existing_csv,
         runtime=args.runtime,
         export_interval=args.export_interval,
     )
