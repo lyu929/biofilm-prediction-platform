@@ -1,0 +1,5 @@
+model,target,best_params
+linear_regression,biofilm_thickness,{}
+ridge_regression,biofilm_thickness,{'model__alpha': 0.1}
+random_forest,biofilm_thickness,"{'model__max_depth': None, 'model__min_samples_leaf': 1, 'model__n_estimators': 300}"
+gradient_boosting,biofilm_thickness,"{'model__learning_rate': 0.05, 'model__max_depth': 5, 'model__n_estimators': 200}"

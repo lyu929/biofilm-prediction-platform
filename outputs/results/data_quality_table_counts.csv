@@ -1,0 +1,6 @@
+table,rows,columns,missing_values,duplicate_rows,simulation_ids
+simulations,1000,12,0,0,1000
+cells,293547,9,237289,0,1000
+clusters,12976,7,0,0,1000
+flow_field,3200000,6,0,0,1000
+simulation_summary,1000,13,0,0,1000
