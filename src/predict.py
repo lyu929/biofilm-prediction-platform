@@ -65,9 +65,9 @@ def _load_model(model_dir: Path, target: str, model_type: str):
     if model_type == "mlp":
         import torch
         try:
-            from .mlp_model import BiofilmMLP
+            from .mlp_model import BiofilmMLP, LegacyBiofilmMLP
         except ImportError:
-            from mlp_model import BiofilmMLP
+            from mlp_model import BiofilmMLP, LegacyBiofilmMLP
 
         model_path = model_dir / f"mlp_model_{target}.pt"
         scaler_path = model_dir / f"mlp_scaler_{target}.joblib"
@@ -78,11 +78,20 @@ def _load_model(model_dir: Path, target: str, model_type: str):
         if not model_path.exists() or not scaler_path.exists():
             raise FileNotFoundError(f"MLP model/scaler not found for target '{target}'.")
         checkpoint = torch.load(model_path, map_location="cpu")
-        model = BiofilmMLP(input_dim=int(checkpoint["input_dim"]))
-        model.load_state_dict(checkpoint["state_dict"])
+        model = BiofilmMLP(
+            input_dim=int(checkpoint["input_dim"]),
+            hidden_dims=tuple(checkpoint.get("hidden_dims", (128, 64, 32))),
+            dropout=float(checkpoint.get("dropout", 0.3)),
+        )
+        try:
+            model.load_state_dict(checkpoint["state_dict"])
+        except RuntimeError:
+            model = LegacyBiofilmMLP(input_dim=int(checkpoint["input_dim"]))
+            model.load_state_dict(checkpoint["state_dict"])
         model.eval()
         scaler = joblib.load(scaler_path)
-        return model, scaler
+        feature_columns = checkpoint.get("feature_columns")
+        return model, scaler, feature_columns
     raise ValueError("model_type must be baseline or mlp")
 
 
@@ -98,7 +107,13 @@ def _predict_frame(features: pd.DataFrame, target: str, model_type: str, config_
 
     import torch
 
-    model, scaler = _load_model(model_dir, target, model_type)
+    model, scaler, model_feature_columns = _load_model(model_dir, target, model_type)
+    if model_feature_columns:
+        fill_values = template.get("fill_values", {})
+        for col in model_feature_columns:
+            if col not in X.columns:
+                X[col] = fill_values.get(col, 0.0)
+        X = X[list(model_feature_columns)]
     Xs = scaler.transform(X)
     with torch.no_grad():
         pred = model(torch.tensor(Xs, dtype=torch.float32)).numpy().ravel()[0]

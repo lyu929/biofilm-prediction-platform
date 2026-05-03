@@ -31,13 +31,14 @@
             left: 0;
             pointer-events: none;  /* clicks pass through to Artistoo canvas */
         }
-        #legend {
+        #legend, #state-legend {
             margin-top: 6px;
             display: flex;
             align-items: center;
             gap: 10px;
             font-size: 12px;
             color: #555;
+            flex-wrap: wrap;
         }
         #legend .gradient {
             width: 120px;
@@ -48,6 +49,12 @@
                 rgba(255,0,0,0.3));
             border: 1px solid #ccc;
         }
+        .swatch {
+            width: 12px;
+            height: 12px;
+            border: 1px solid #666;
+            display: inline-block;
+        }
     </style>
     <script src="build/artistoo.js"></script>
     <script src="build/fpsmeter.min.js"></script>
@@ -55,9 +62,8 @@
 <body>
     <h1>Biofilm Simulation</h1>
     <p>
-        <strong>Black wall (type 1)</strong> at bottom.&nbsp;
-        <strong>grey cells (type 2)</strong> produce signal and flow right.&nbsp;
-        <strong>green cells (type 3)</strong> are activated by high signal. produce EPS (red)
+        <strong>Wall</strong> is at the bottom of the canvas. Browser rendering uses CPM cell kinds;
+        database export additionally labels near-wall kind-2 cells as <strong>attached</strong>.
     </p>
 
     <div id="status">Initializing...</div>
@@ -72,6 +78,15 @@
         <span>Flow speed:</span>
         <div class="gradient"></div>
         <span>slow → fast</span>
+    </div>
+    <div id="state-legend">
+        <span><i class="swatch" style="background:#d3d3d3"></i> planktonic</span>
+        <span><i class="swatch" style="background:#808080"></i> attached / wall</span>
+        <span><i class="swatch" style="background:#2f6fed"></i> active</span>
+        <span><i class="swatch" style="background:#0b2a5b"></i> inactive</span>
+        <span><i class="swatch" style="background:#d62728"></i> qs_active</span>
+        <span><i class="swatch" style="background:#7b3294"></i> eps_producing</span>
+        <span><i class="swatch" style="background:rgba(44,162,95,0.35)"></i> EPS matrix (analysis overlays)</span>
     </div>
 
     <script src="artistoo-worker.js"></script>

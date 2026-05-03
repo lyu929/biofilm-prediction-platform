@@ -87,6 +87,13 @@ def load_all_data(
     if source == "database":
         return load_from_database(config_path=config_path, db_config=db_config)
     if source == "csv":
+        if csv_base_dir is None and config_path is not None:
+            cfg = load_config(config_path)
+            csv_base_dir = PROJECT_ROOT
+            raw_rel = cfg.get("paths", {}).get("raw_data")
+            if raw_rel:
+                paths = {table: Path(raw_rel) / f"{table}.csv" for table in TABLE_NAMES}
+                return load_from_csv(base_dir=csv_base_dir, paths=paths)
         return load_from_csv(base_dir=csv_base_dir)
     if source == "excel":
         if not excel_path:

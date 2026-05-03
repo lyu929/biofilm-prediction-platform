@@ -107,7 +107,9 @@ const config = {
     simsettings: {
         NRCELLS: [0, 0, 0, 0],
         CANVASCOLOR: "eaecef",
-        CELLCOLOR:   ["", "888888", "00FF00", "FF0000", "8B4513"],
+        // kind 2 is displayed as light gray in the browser. Database export
+        // separates it into planktonic vs attached by near-wall position.
+        CELLCOLOR:   ["", "808080", "D3D3D3", "D62728", "7B3294"],
         ACTCOLOR:    [false, false, true, true, false],
         SHOWBORDERS: [false, false, true, true, true],
         zoom: 2,

@@ -27,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--excel_path", default=None)
     parser.add_argument("--skip_mlp", action="store_true")
     parser.add_argument("--skip_eda", action="store_true")
+    parser.add_argument("--run_cv", action="store_true", help="also run K-fold cross-validation for baseline models")
+    parser.add_argument("--tune", action="store_true", help="run GridSearchCV hyperparameter tuning for baseline models")
     return parser.parse_args()
 
 
@@ -44,7 +46,14 @@ def main() -> None:
     if not args.skip_eda:
         run_eda(data, dataset=dataset, target=args.target, config_path=args.config)
 
-    metrics = train_baseline_models(X, y, target=args.target, config_path=args.config)
+    metrics = train_baseline_models(
+        X,
+        y,
+        target=args.target,
+        config_path=args.config,
+        run_cv=args.run_cv,
+        tune=args.tune,
+    )
     print("Baseline metrics:")
     print(metrics.to_string(index=False))
 

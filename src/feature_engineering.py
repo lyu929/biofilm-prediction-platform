@@ -35,6 +35,8 @@ CELL_STATES = [
     "detached",
 ]
 
+BIOFILM_STATES = {"attached", "qs_active", "eps_producing", "inactive"}
+
 
 def _safe_numeric(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     out = df.copy()
@@ -70,19 +72,51 @@ def aggregate_cells_by_timepoint(cells: pd.DataFrame) -> pd.DataFrame:
             df[col] = 0 if col not in {"simulation_id", "state"} else ""
     df = _safe_numeric(df, ["timepoint", "x", "y", "volume", "local_signal"])
     df["state"] = df["state"].fillna("unknown").astype(str)
+    field_height = float(df["y"].max()) if not df["y"].dropna().empty else 0.0
+    field_width = max(float(np.ceil(df["x"].max()) + 1.0), 1.0) if not df.empty else 1.0
+    df["distance_from_wall"] = np.maximum(0.0, field_height - df["y"])
+    df["is_biofilm"] = df["state"].isin(BIOFILM_STATES)
 
     grouped = df.groupby(["simulation_id", "timepoint"], dropna=False)
     agg = grouped.agg(
         cell_count=("cell_id", "count") if "cell_id" in df.columns else ("state", "count"),
+        total_biomass=("volume", "sum"),
         mean_x=("x", "mean"),
         mean_y=("y", "mean"),
         std_x=("x", "std"),
         std_y=("y", "std"),
+        spatial_spread_x=("x", lambda s: float(s.max() - s.min()) if len(s) else 0.0),
+        spatial_spread_y=("y", lambda s: float(s.max() - s.min()) if len(s) else 0.0),
         mean_volume=("volume", "mean"),
         std_volume=("volume", "std"),
+        max_volume=("volume", "max"),
         mean_local_signal=("local_signal", "mean"),
         std_local_signal=("local_signal", "std"),
+        max_local_signal=("local_signal", "max"),
     ).reset_index()
+
+    biofilm_rows = []
+    for keys, group in grouped:
+        bio = group[group["is_biofilm"]]
+        if bio.empty:
+            row = {
+                "simulation_id": keys[0],
+                "timepoint": keys[1],
+                "biofilm_thickness": 0.0,
+                "surface_coverage": 0.0,
+                "roughness": 0.0,
+            }
+        else:
+            heights = bio["distance_from_wall"].to_numpy(dtype=float)
+            row = {
+                "simulation_id": keys[0],
+                "timepoint": keys[1],
+                "biofilm_thickness": float(np.max(heights)),
+                "surface_coverage": float(bio["x"].round().nunique() / field_width),
+                "roughness": float(np.std(heights)),
+            }
+        biofilm_rows.append(row)
+    biofilm_metrics = pd.DataFrame(biofilm_rows)
 
     state_counts = (
         df.groupby(["simulation_id", "timepoint", "state"]).size().rename("n").reset_index()
@@ -99,10 +133,16 @@ def aggregate_cells_by_timepoint(cells: pd.DataFrame) -> pd.DataFrame:
     for state in CELL_STATES:
         if state not in ratios.columns:
             ratios[state] = 0.0
-    rename = {state: f"{state}_ratio" for state in CELL_STATES if state != "planktonic"}
+    rename = {state: f"{state}_ratio" for state in CELL_STATES}
     ratios = ratios.rename(columns=rename)
 
-    out = agg.merge(ratios[["simulation_id", "timepoint"] + list(rename.values())], on=["simulation_id", "timepoint"], how="left")
+    out = agg.merge(
+        ratios[["simulation_id", "timepoint"] + list(rename.values())],
+        on=["simulation_id", "timepoint"],
+        how="left",
+    )
+    if not biofilm_metrics.empty:
+        out = out.merge(biofilm_metrics, on=["simulation_id", "timepoint"], how="left")
     return out.fillna(0.0)
 
 

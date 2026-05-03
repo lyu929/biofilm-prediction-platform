@@ -1,72 +1,85 @@
 # Biofilm Simulation Data Analysis and Prediction Platform
 
-This repository organizes an existing biofilm simulation workflow into a
-GitHub-ready research project for simulation export, relational database
-storage, feature engineering, machine learning, deep learning, and interactive
-prediction.
+This project organizes an existing biofilm simulation workflow into a GitHub-ready research platform for simulation export, relational database storage, feature engineering, EDA, machine learning, deep learning, and interactive prediction.
 
-The original simulation files are preserved in `src/main.js`,
-`src/artistoo-worker.js`, `src/ns_simple.py`, and related files. The new Python
-runner in `simulation/` keeps the same near-wall biofilm logic and adds stable
-data export, batch parameter sweeps, database writing, and bug fixes for wall
-attachment, QS/EPS behavior, division bookkeeping, and standardized table
-outputs.
+The original browser/Artistoo simulation files are preserved in `src/main.js`, `src/artistoo-worker.js`, `src/ns_simple.py`, and related files. The Python runner in `simulation/` is an export-oriented companion that keeps the same near-wall biofilm assumptions while adding stable batch simulation, standardized outputs, and database writing.
 
-## Research Background
+## What The Platform Does
 
-Biofilm formation depends on flow rate, cell-wall adhesion, cell-cell adhesion,
-signal diffusion and decay, quorum-sensing thresholds, cell division, and EPS
-production. A single simulation can generate many time-resolved cell and
-cluster records. A parameter sweep with repeated random seeds naturally produces
-large training datasets for predicting final biofilm morphology from early
-simulation behavior.
+The platform predicts final biofilm outcomes from simulation parameters and early-stage process data.
 
-## Database Schema
+Inputs:
 
-The platform uses five standard tables:
+- simulation parameters
+- early cell-level records
+- early cluster-level records
+- flow-field records
 
-- `simulations`: one row per simulation input parameter set.
-- `cells`: cell-level time series, one row per cell per exported timepoint.
-- `clusters`: cluster-level time series, one row per cluster per exported timepoint.
-- `flow_field`: spatial flow-grid records for each simulation.
-- `simulation_summary`: final outcome labels for each simulation.
+Outputs:
 
-`simulation_id` links all tables. `cells` and `clusters` also include
-`timepoint`.
+- `biofilm_thickness`
+- `surface_coverage`
+- `roughness`
+- `eps_fraction`
+- `cluster_count`
+- `time_to_stable_biofilm`
 
-The schema lives in `src/schema.sql` and can be created automatically:
+## Research Workflow
 
-```bash
-python src/database_init.py
+```mermaid
+flowchart LR
+    A["Run simulation / parameter sweep"] --> B["Store data in database or CSV"]
+    B --> C["Feature engineering"]
+    C --> D["One row per simulation_id"]
+    D --> E["EDA and data quality checks"]
+    D --> F["Train ML/DL models"]
+    F --> G["Evaluate and interpret"]
+    G --> H["Predict new parameter cases"]
 ```
 
-## Why Simulation Creates Large Data
+Important modeling rule:
 
-One `simulation_id` represents one full run. Each run can contain many exported
-timepoints, and each timepoint can contain hundreds or thousands of cells. For
-example:
+```text
+cell-level rows
+→ group by simulation_id and timepoint
+→ extract biofilm-level features
+→ pivot early timepoints
+→ one training row per simulation_id
+→ predict final biofilm-level outcomes
+```
+
+## Database Tables
+
+The project uses five standard tables:
+
+- `simulations`: one row per simulation input parameter set.
+- `cells`: one row per cell per exported timepoint.
+- `clusters`: one row per cluster per exported timepoint.
+- `flow_field`: one row per spatial flow-grid point.
+- `simulation_summary`: one final outcome row per simulation.
+
+`simulation_id` links all tables. `cells` and `clusters` also include `timepoint`.
+
+The schema lives in `src/schema.sql`.
+
+## Why Simulation Produces Large Data
+
+Data are not manually entered. Large tables are generated automatically by parameter sweeps:
+
+```text
+10 parameter sets x 3 random seeds x 100 timepoints x 300 cells
+= 900,000 cell-level records
+```
+
+Larger example:
 
 ```text
 50 parameter sets x 5 random seeds = 250 simulations
-250 simulations x 100 timepoints x 500 cells = 12,500,000 cell rows
+250 simulations x 100 timepoints x 500 cells
+= 12,500,000 cell rows
 ```
 
-## Parameter Sweep
-
-A parameter sweep runs all combinations of selected parameters and random seeds.
-Each combination creates a new `simulation_id`.
-
-Example grid in `config.yaml`:
-
-```yaml
-flow_rate: [0.1, 0.5, 1.0]
-adhesion_wall: [0.2, 0.5, 0.8]
-adhesion_cell: [0.3, 0.6]
-diffusion_rate: [0.01, 0.05]
-qs_threshold: [0.3, 0.6]
-eps_rate: [0.01, 0.03]
-random_seed: [1, 2, 3]
-```
+This is why DBeaver can show millions of rows after a reasonable number of simulation runs.
 
 ## Project Structure
 
@@ -79,6 +92,10 @@ random_seed: [1, 2, 3]
 │   ├── raw/
 │   ├── processed/
 │   └── examples/
+├── docs/
+│   ├── USER_GUIDE.md
+│   ├── WORKFLOW.md
+│   └── THESIS_NOTES.md
 ├── models/
 ├── outputs/
 │   ├── figures/
@@ -107,15 +124,13 @@ random_seed: [1, 2, 3]
 │   ├── evaluate.py
 │   ├── predict.py
 │   ├── visualize.py
+│   ├── ablation.py
 │   └── main.py
 ├── app/
 │   └── streamlit_app.py
 └── notebooks/
     └── exploratory_analysis.ipynb
 ```
-
-Existing browser/FEM simulation files remain in `src/` as legacy simulation
-assets.
 
 ## Installation
 
@@ -125,7 +140,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Database Configuration
+## Configure Database
 
 Edit `config.yaml`:
 
@@ -135,7 +150,7 @@ database:
   host: localhost
   port: 3306
   user: root
-  password: your_password
+  password:
   database: biofilm_db
 ```
 
@@ -151,28 +166,25 @@ database:
   database: biofilm_db
 ```
 
-The project uses SQLAlchemy with `pymysql` for MySQL and `psycopg2-binary` for
-PostgreSQL.
+The database layer uses SQLAlchemy with `pymysql` for MySQL and `psycopg2-binary` for PostgreSQL. Environment variables such as `BIOFILM_DB_PASSWORD` can override `config.yaml`.
 
 ## DBeaver Workflow
 
-1. Create a MySQL or PostgreSQL connection in DBeaver.
+1. Create/open the MySQL or PostgreSQL connection in DBeaver.
 2. Use the same host, port, user, password, and database from `config.yaml`.
-3. Run table initialization:
+3. Initialize tables:
 
-   ```bash
-   python src/database_init.py
-   ```
+```bash
+.venv/bin/python src/database_init.py
+```
 
-4. Run a simulation with database export.
-5. Refresh the DBeaver schema and inspect the five standard tables.
+4. Run simulations with `--export database`.
+5. Refresh `biofilm_db` in DBeaver.
+6. Inspect `simulations`, `cells`, `clusters`, `flow_field`, and `simulation_summary`.
 
-## Run The Existing Browser Simulation Into DBeaver
+## Run The Browser Simulation Into DBeaver
 
-The original browser simulation in `src/main.js` can write directly into the
-database while it runs. This path does not use CSV files.
-
-Terminal 1, from the project root:
+Terminal 1:
 
 ```bash
 .venv/bin/python src/ns_simple.py
@@ -191,92 +203,80 @@ Open:
 http://localhost:8000
 ```
 
-Every browser reload creates a new `simulation_id`. Every 10 MCS by default,
-`src/main.js` sends a snapshot to `src/ns_simple.py`, and the server writes
-`cells`, `clusters`, `flow_field`, and `simulation_summary` into the DBeaver
-database. Detailed instructions are in
-`src/README_database_simulation_workflow.md`.
+The browser simulation sends database snapshots through `src/ns_simple.py`. Every browser reload starts a new `simulation_id`. The browser canvas uses CPM cell kinds; exported database rows classify near-wall kind-2 cells as `attached`.
 
-## Run One Simulation
+## Run One Python Simulation
 
 ```bash
-python simulation/run_simulation.py --config config.yaml --export csv
+.venv/bin/python simulation/run_simulation.py \
+  --config config.yaml \
+  --export database
 ```
 
-Write directly to the database:
+CSV export is still available:
 
 ```bash
-python simulation/run_simulation.py --config config.yaml --export database
+.venv/bin/python simulation/run_simulation.py \
+  --config config.yaml \
+  --export both
 ```
 
-Write both CSV and database:
+Make attached cells easier to observe:
 
 ```bash
-python simulation/run_simulation.py --config config.yaml --export both
-```
-
-Tune attachment:
-
-```bash
-python simulation/run_simulation.py \
+.venv/bin/python simulation/run_simulation.py \
+  --config config.yaml \
   --adhesion_wall 0.8 \
   --flow_rate 0.1 \
-  --runtime 500 \
-  --export_interval 10
+  --export_interval 10 \
+  --export database
 ```
 
 ## Run Parameter Sweep
 
 ```bash
-python simulation/run_parameter_sweep.py --config config.yaml --export csv
+.venv/bin/python simulation/run_parameter_sweep.py \
+  --config config.yaml \
+  --shuffle \
+  --shuffle_seed 20260502 \
+  --max_runs 1000 \
+  --runtime 100 \
+  --export_interval 10 \
+  --export database
 ```
 
-Quick smoke test:
+The default sweep grid is in `config.yaml`.
+
+## Build Dataset And Train Models
+
+From database:
 
 ```bash
-python simulation/run_parameter_sweep.py --config config.yaml --max_runs 3 --runtime 50 --export csv
+.venv/bin/python src/main.py \
+  --source database \
+  --target biofilm_thickness \
+  --early_timepoints 10
 ```
 
-## CSV and Excel Import
-
-Default CSV paths:
-
-- `data/raw/simulations.csv`
-- `data/raw/cells.csv`
-- `data/raw/clusters.csv`
-- `data/raw/flow_field.csv`
-- `data/raw/simulation_summary.csv`
-
-Excel import supports one workbook with sheets named:
-
-- `simulations`
-- `cells`
-- `clusters`
-- `flow_field`
-- `simulation_summary`
-
-## Full Pipeline
-
-Run from CSV:
+From CSV:
 
 ```bash
-python src/main.py --source csv --target biofilm_thickness --early_timepoints 10
+.venv/bin/python src/main.py \
+  --source csv \
+  --target roughness \
+  --early_timepoints 10
 ```
 
-Run from database:
+Optional cross-validation and hyperparameter tuning:
 
 ```bash
-python src/main.py --source database --target roughness --early_timepoints 10
+.venv/bin/python src/main.py \
+  --source database \
+  --target biofilm_thickness \
+  --early_timepoints 10 \
+  --run_cv \
+  --tune
 ```
-
-The pipeline:
-
-1. Loads data.
-2. Builds one-row-per-`simulation_id` features.
-3. Saves `data/processed/training_dataset.csv`, `X.csv`, and `y.csv`.
-4. Runs EDA plots.
-5. Trains baseline models.
-6. Trains the PyTorch MLP when enough samples exist.
 
 ## Models
 
@@ -289,42 +289,49 @@ Baseline models:
 
 Deep learning model:
 
-- PyTorch MLP: `input_dim -> 128 -> 64 -> 32 -> output_dim`
-- ReLU activations
-- Dropout(0.2)
+- PyTorch MLP
+- hidden layers: 128, 64, 32
+- ReLU
+- BatchNorm
+- Dropout
 - Adam optimizer
 - MSE loss
-- Early stopping
+- early stopping
 
 Metrics:
 
 - MAE
 - RMSE
 - R2
+- optional bootstrap confidence intervals
+
+Interpretability:
+
+- tree feature importance
+- permutation importance
+- ablation study by feature groups
 
 ## Prediction
 
 Predict from parameters only:
 
 ```bash
-python src/predict.py \
-  --target biofilm_thickness \
+.venv/bin/python src/predict.py \
+  --target all \
+  --model_type baseline \
   --flow_rate 0.5 \
-  --adhesion_wall 0.8 \
+  --adhesion_wall 0.7 \
   --adhesion_cell 0.6 \
-  --diffusion_rate 0.05 \
-  --signal_decay 0.01 \
-  --qs_threshold 0.6 \
-  --division_rate 0.01 \
+  --diffusion_rate 0.03 \
+  --signal_decay 0.02 \
+  --qs_threshold 0.4 \
+  --division_rate 0.02 \
   --eps_rate 0.02 \
-  --runtime 300
+  --runtime 100 \
+  --random_seed 42
 ```
 
-When early cell or cluster data is not provided, missing early-timepoint
-features are filled from the saved training feature template.
-
-For early-data prediction, use the Streamlit app or call
-`predict_from_early_data()` in `src/predict.py`.
+When early cell/cluster data are missing, prediction uses the saved feature template and fills missing columns with training-set medians or zeros.
 
 ## Streamlit App
 
@@ -339,41 +346,73 @@ Pages:
 - Simulation Data Import
 - Data Analysis
 - Model Training
+- Cross-Validation & Tuning
+- Ablation Study
+- Prediction Uncertainty
 - New Parameter Prediction
 - Early Data Prediction
 - Model Visualization
+
+## Figures
+
+All figures are saved to `outputs/figures/`.
+
+Spatial convention:
+
+- x-axis = along-wall position.
+- y-axis = distance from wall.
+- wall = `y = 0`.
+- cell/flow spatial figures use equal aspect ratio.
+- heatmaps use `origin="lower"` so biofilm growth appears upward from the wall.
+
+Cell-state colors:
+
+- planktonic: light gray
+- attached: gray
+- active: blue
+- inactive: dark blue
+- qs_active: red
+- eps_producing: purple
+- EPS matrix: green/transparent green when available
 
 ## Output Files
 
 Data:
 
-- `data/raw/*.csv`: simulation-exported raw tables.
-- `data/processed/training_dataset.csv`: modeling dataset.
-- `data/processed/X.csv`: feature matrix.
-- `data/processed/y.csv`: selected target.
+- `data/processed/training_dataset.csv`
+- `data/processed/X.csv`
+- `data/processed/y.csv`
 
-Models:
+Results:
 
-- `models/*_linear_regression.joblib`
-- `models/*_ridge_regression.joblib`
-- `models/*_random_forest.joblib`
-- `models/*_gradient_boosting.joblib`
-- `models/baseline_best_<target>.joblib`
-- `models/mlp_model.pt`
-- `models/mlp_scaler.joblib`
-- `models/feature_template_<target>.joblib`
-
-Results and figures:
-
+- `outputs/results/data_quality_table_counts.csv`
+- `outputs/results/missing_values.csv`
 - `outputs/results/baseline_metrics.csv`
-- `outputs/results/mlp_training_history.csv`
-- `outputs/figures/pred_vs_true_baseline.png`
-- `outputs/figures/mlp_loss_curve.png`
-- EDA and feature-importance figures
+- `outputs/results/mlp_<target>_metrics.csv`
+- `outputs/results/*_feature_importance.csv`
+- `outputs/results/*_permutation_importance.csv`
+- `outputs/results/ablation_*.csv`
 
-## Notes on Existing Simulation Code
+Figures:
 
-The browser simulation files are not deleted or replaced. The Python runner is
-an export-oriented companion that keeps the same modeling assumptions and makes
-the data pipeline reliable for database storage and ML training. Details are in
-`simulation/bugfix_notes.md`.
+- target distributions
+- correlation heatmap
+- parameter sensitivity scatter/boxplots
+- time-series plots
+- spatial cell-state plot
+- local signal heatmap
+- flow/shear field plot
+- pred-vs-true plots
+- residual plots
+- loss curves
+- feature importance plots
+
+## Thesis Documentation
+
+See:
+
+- `docs/USER_GUIDE.md`
+- `docs/WORKFLOW.md`
+- `docs/THESIS_NOTES.md`
+
+These files explain how to use the platform, how the database data are generated, and how the project can support a thesis Methods/Results/Discussion structure.
